@@ -20,11 +20,12 @@ STATION_TIMES = containers.Map(...
 );
 
 % Student Profile Class Definition (MATLAB Struct/Function)
-% In MATLAB, a class is usually defined in a separate file, but we'll use 
-% a struct or nested function for simplicity here.
+% In MATLAB, a class is usually defined in a separate file, but I will use 
+% a struct or something for simplicity here. Get wrecked Java users.
 
 function name = clean_station_name(raw_name)
-    % A simple case-insensitive cleaning function
+    % A simple case-insensitive cleaning function. Need to confirm if this
+    % is actually correct.
     raw_name = lower(raw_name);
     if contains(raw_name, 'entree')
         name = 'Entree';
@@ -40,7 +41,6 @@ function name = clean_station_name(raw_name)
 end
 
 function profile = create_student_profile(row)
-    % Simulating the data loading logic from Python's StudentProfile class
     profile = struct();
     profile.first_station = clean_station_name(row{3});
     
@@ -63,7 +63,7 @@ end
 
 function profiles = load_profiles_matlab()
     % Row format: {Col1, Col2, FirstStation, NumStations, W_Pizza, W_Entree, W_Grill, W_Corner}
-    dummy_data = { % dummy for now
+    dummy_data = { % Dummy data for now, the CSV reader was garbage.
         {'', '', 'Entree bar', '2', '1', '5', '1', '1'};
         {'', '', 'Pizza', '3', '3', '1', '1', '1'};
         {'', '', 'Grill', '1', '1', '1', '5', '1'};
@@ -186,27 +186,21 @@ function stats = run_simulation_matlab(scenario_type, profiles)
             % Service Completion of the previous student
             if entry_busy_until < current_time && entry_busy_until ~= 0
                  % Move to food stations - not tracked in detail for queue stats
-                 % The SimPy code simply adds service time here:
-                 % We don't need a full event loop for subsequent stations 
-                 % since they are not modeled as bottlenecks.
             end
             
             % Start service for the next student in queue
             served_student_id = entry_queue(1);
             entry_queue(1) = []; % Dequeue
             
-            % Calculate Wait Time (SimPy: wait_time = env.now - arrival_time)
-            % This is tricky without tracking individual arrival times in the queue.
+            % Calculate Wait Time
+            % Hmmm this is quite tricky without tracking individual arrival times in the queue.
             % APPROXIMATION: Assume the wait time is the time spent waiting for the Entry to be free.
-            % The Python version tracks individual wait times, we just track the queue size change.
-            % To accurately track wait time, we would need to store {ID, ArrivalTime} in the queue. 
+            % A Python version would track individual wait times, but here we just track 
+            % the queue size change. To accurately track wait time,
+            % we would need to store {ID, ArrivalTime} in the queue. 
             
             % Service time at Entry
             service_duration = TIME_ENTRY_MIN + (TIME_ENTRY_MAX - TIME_ENTRY_MIN) * rand();
-            
-            % Record the wait time for this student
-            % (This requires knowing the arrival time of the student we just dequeued, 
-            % which we skipped for simplicity. The primary metric is Queue Length.)
 
             % Update resource busy time
             entry_busy_until = current_time + service_duration;
@@ -217,7 +211,7 @@ end
 
 % EXECUTION
 
-% Load dummy profiles
+% Load dummy profiles for now
 profiles = load_profiles_matlab();
 
 disp('RUNNING SIMULATION (MATLAB DES)');
@@ -229,7 +223,6 @@ stats_split = run_simulation_matlab('Two Sessions', profiles);
 stats_merged = run_simulation_matlab('One Session', profiles);
 
 % RESULTS
-
 % Calculate Metrics
 max_q_split = max(stats_split.queue_over_time);
 avg_q_split = mean(stats_split.queue_over_time);
