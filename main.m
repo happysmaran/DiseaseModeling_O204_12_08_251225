@@ -62,11 +62,8 @@ function profile = create_student_profile(row)
 end
 
 function profiles = load_profiles_matlab()
-    % Simplified data loading since a real CSV read isn't available
-    % Using fallback dummy data as in the Python script
-    
     % Row format: {Col1, Col2, FirstStation, NumStations, W_Pizza, W_Entree, W_Grill, W_Corner}
-    dummy_data = {
+    dummy_data = { % dummy for now
         {'', '', 'Entree bar', '2', '1', '5', '1', '1'};
         {'', '', 'Pizza', '3', '3', '1', '1', '1'};
         {'', '', 'Grill', '1', '1', '1', '5', '1'};
