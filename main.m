@@ -99,7 +99,7 @@ function stats = run_simulation_matlab(scenario_type, profiles)
     % Resource/Queue Management
     entry_queue = []; % List of student IDs waiting for Entry
     entry_busy_until = 0; % Time when the Entry Resource becomes free
-    student_arrival_events = []; % Initial list of all student arrival times
+    student_arrival_events = {}; % Initial list of all student arrival times
     
     % Time tracking for queue monitoring
     next_monitor_time = 0;
@@ -131,12 +131,14 @@ function stats = run_simulation_matlab(scenario_type, profiles)
     current_time = 0;
     event_idx = 1;
     
+    SIMULATION_TIME = 10000;
     % 2. Main Simulation Loop (Discrete-Event Scheduler)
     while current_time < SIMULATION_TIME || ~isempty(entry_queue) || event_idx <= size(event_list, 1)
         
         % A. MONITOR QUEUE
         if current_time >= next_monitor_time
             stats.queue_over_time(end+1) = length(entry_queue);
+            MONITOR_INTERVAL = 10;
             next_monitor_time = current_time + MONITOR_INTERVAL;
         end
 
