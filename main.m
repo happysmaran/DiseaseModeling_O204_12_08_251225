@@ -18,14 +18,26 @@ checkin_max = 5;
 % Station deterministic service times (s)
 tP = 10; tE = 10; tG = 10; tC = 30;
 
-% Path probabilities (PEGC, PEG, PEC, PE)
-path_probs = [0.101, 0.246, 0.190, 0.463];
-
 % Food choice probabilities
 P_pizza   = 0.3232;
 P_entree  = 0.7448;
 P_grill   = 0.5310;
 P_corner  = 0.4115;
+
+% Path probabilities (PEGC, PEG, PEC, PE)
+P_PEGC = P_pizza * P_entree * P_grill * P_corner;
+P_PEG = P_pizza * P_entree * P_grill;
+P_PEC = P_pizza * P_entree * P_corner;
+P_PE = P_pizza * P_entree;
+
+total_prob = P_PEGC + P_PEG + P_PEC + P_PE;
+
+P_PEGC_normalized = P_PEGC / total_prob;
+P_PEG_normalized = P_PEG / total_prob;
+P_PEC_normalized = P_PEC / total_prob;
+P_PE_normalized = P_PE / total_prob;
+
+path_probs = [P_PEGC_normalized, P_PEG_normalized, P_PEC_normalized, P_PE_normalized];
 
 % Travel times between nodes
 tt_checkin_to_station.P = 1; tt_checkin_to_station.E = 2;
