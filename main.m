@@ -1,247 +1,361 @@
-% CONFIGURATION
-NUM_STUDENTS = 100;       % Total population size for the simulation
-RANDOM_SEED = 42;
-SIMULATION_TIME = 10000;  % Seconds (roughly 3 hours: 10am - 1pm)
-MONITOR_INTERVAL = 10;    % Check queue every 10 seconds
+clearvars; close all; clc;
 
-% Service Times (seconds)
-TIME_ENTRY_MIN = 2;
-TIME_ENTRY_MAX = 5;
-TIME_ENTREE = 10;
-TIME_GRILL = 10;
-TIME_CORNER = 30;
-TIME_PIZZA = 15;
+%% ---------------- Parameters ----------------
+N = 100;                % number of students
+simT = 10000;           % simulation horizon in seconds
+dt = 1;                 % sampling interval for queue time-series (s)
+trials = 1;             % Monte Carlo trials
+arrival_jitter = 600;   % jitter after class end (s)
 
-% Global Station Data
-STATION_KEYS = {'Entree', 'Pizza', 'Grill', 'Corner'};
-STATION_TIMES = containers.Map(...
-    {'Entree', 'Grill', 'Corner', 'Pizza'}, ...
-    {TIME_ENTREE, TIME_GRILL, TIME_CORNER, TIME_PIZZA} ...
-);
+% Class end times (seconds since 10:00AM)
+t_10_20 = 20*60;        % 1200 s
+t_12_00 = 120*60;       % 7200 s
 
-% Student Profile Class Definition (MATLAB Struct/Function)
-% In MATLAB, a class is usually defined in a separate file, but I will use 
-% a struct or something for simplicity here. Get wrecked Java users.
+% Check-in service distribution (uniform)
+checkin_min = 2;
+checkin_max = 5;
 
-function name = clean_station_name(raw_name)
-    % A simple case-insensitive cleaning function. Need to confirm if this
-    % is actually correct.
-    raw_name = lower(raw_name);
-    if contains(raw_name, 'entree')
-        name = 'Entree';
-    elseif contains(raw_name, 'pizza') || contains(raw_name, 'pasta')
-        name = 'Pizza';
-    elseif contains(raw_name, 'grill')
-        name = 'Grill';
-    elseif contains(raw_name, 'corner')
-        name = 'Corner';
+% Station deterministic service times (s)
+tP = 10; tE = 10; tG = 10; tC = 30;
+
+% Path probabilities (PEGC, PEG, PEC, PE)
+path_probs = [0.101, 0.246, 0.190, 0.463];
+
+% Food choice probabilities
+P_pizza   = 0.3232;
+P_entree  = 0.7448;
+P_grill   = 0.5310;
+P_corner  = 0.4115;
+
+% Travel times between nodes
+tt_checkin_to_station.P = 1; tt_checkin_to_station.E = 2;
+tt_checkin_to_station.G = 3; tt_checkin_to_station.C = 4;
+
+tt_station_to_station.P.E = 1; tt_station_to_station.P.G = 1; tt_station_to_station.P.C = 1;
+tt_station_to_station.E.G = 1; tt_station_to_station.E.C = 1;
+tt_station_to_station.G.C = 1;
+
+% Output folder
+logfolder = pwd;
+
+%% Validate
+if abs(sum(path_probs)-1) > 1e-12
+    error('path_probs must sum to 1');
+end
+
+%% Scenarios
+scenarios = {'split','all12'};
+results = struct();
+
+for sIdx = 1:numel(scenarios)
+    scenario = scenarios{sIdx};
+    fprintf('\n=== Scenario: %s ===\n', scenario);
+
+    times = 0:dt:simT;
+    nTimes = numel(times);
+
+    % storage across trials
+    queue_ts_trials = zeros(trials, nTimes);
+    station_queue_ts_trials = zeros(trials, 4, nTimes); % P,E,G,C
+    trials_summary = cell(trials,1);
+
+    for tr = 1:trials
+        fprintf(' Trial %d/%d ...\n', tr, trials);
+
+        % Generate arrivals and sample paths
+        arrivals = generate_arrivals(N, scenario, t_10_20, t_12_00, arrival_jitter);
+        paths = sample_paths(N, path_probs);
+
+        % Run check-in
+        station_next_free.P = 0;
+        station_next_free.E = 0;
+        station_next_free.G = 0;
+        station_next_free.C = 0;
+
+        [ci_start, ci_end, ci_wait] = run_checkin(arrivals, checkin_min, checkin_max, paths, ...
+                                         tP, tE, tG, tC, station_next_free);
+
+        % -------------------- Station simulation with food choice --------------------
+        [student_timeline, station_records] = simulate_stations_with_paths_and_food( ...
+            ci_end, paths, P_pizza, P_entree, P_grill, P_corner, ...
+            tP, tE, tG, tC, tt_checkin_to_station, tt_station_to_station);
+
+        % Compute queue time-series
+        q_checkin = compute_queue_ts(arrivals, ci_start, times); % waiting outside check-in
+        qP = compute_queue_ts(station_records.P.arrivals, station_records.P.start_times, times);
+        qE = compute_queue_ts(station_records.E.arrivals, station_records.E.start_times, times);
+        qG = compute_queue_ts(station_records.G.arrivals, station_records.G.start_times, times);
+        qC = compute_queue_ts(station_records.C.arrivals, station_records.C.start_times, times);
+
+        % Save CSV logs
+        logfile = fullfile(logfolder, sprintf('checkin_log_%s_trial%02d.csv', scenario, tr));
+        T = table((1:N)', round(arrivals,3), round(ci_start,3), round(ci_end,3), round(ci_wait,3), paths(:), ...
+            'VariableNames',{'student_id','arrival_s','checkin_start_s','checkin_end_s','checkin_wait_s','path'});
+        writetable(T, logfile);
+        fprintf('  Saved check-in CSV: %s\n', logfile);
+
+        stationfile = fullfile(logfolder, sprintf('station_log_%s_trial%02d.csv', scenario, tr));
+        Srows = cell(N,10);
+        for i = 1:N
+            st = student_timeline{i};
+            row = cell(1,10);
+            row{1} = i;
+            row{2} = paths{i};
+            row{3} = NaN;
+            row{4} = get_field_or_nan(st,'P',1);
+            row{5} = get_field_or_nan(st,'P',2);
+            row{6} = get_field_or_nan(st,'E',1);
+            row{7} = get_field_or_nan(st,'E',2);
+            row{8} = get_field_or_nan(st,'G',1);
+            row{9} = get_field_or_nan(st,'G',2);
+            row{10} = get_field_or_nan(st,'C',1);
+            row{11} = get_field_or_nan(st,'C',2);
+            Srows(i,1:numel(row)) = row;
+        end
+        S = cell2table(Srows, 'VariableNames', {'student_id','path','checkin_end','P_start','P_end','E_start','E_end','G_start','G_end','C_start','C_end'});
+        writetable(S, stationfile);
+        fprintf('  Saved station CSV: %s\n', stationfile);
+
+        % Store timeseries
+        queue_ts_trials(tr,:) = q_checkin;
+        station_queue_ts_trials(tr,1,:) = qP;
+        station_queue_ts_trials(tr,2,:) = qE;
+        station_queue_ts_trials(tr,3,:) = qG;
+        station_queue_ts_trials(tr,4,:) = qC;
+
+        % Summaries
+        summary.avg_checkin_queue = mean(q_checkin);
+        [summary.peak_checkin, idx_peak] = max(q_checkin);
+        summary.peak_checkin_time = times(idx_peak);
+        summary.avg_checkin_wait = mean(ci_wait);
+        summary.pct_wait_over30 = mean(ci_wait > 30) * 100;
+        trials_summary{tr} = summary;
+    end
+
+    % Aggregate results
+    results.(scenario).times = times;
+    results.(scenario).queue_ts_mean = mean(queue_ts_trials, 1);
+    results.(scenario).station_queue_ts_mean = squeeze(mean(station_queue_ts_trials,1));
+    results.(scenario).trials_summary = trials_summary;
+end
+
+%% ---------------- Plot results ----------------
+figure('Name','Check-in & Station queues','NumberTitle','off','Units','normalized','Position',[0.05 0.05 0.9 0.85]);
+t = results.split.times;
+subplot(3,1,1);
+plot(t, results.split.queue_ts_mean, 'LineWidth', 1.5); hold on;
+plot(t, results.all12.queue_ts_mean, 'LineWidth', 1.5);
+xlabel('Time since 10:00 AM (s)'); ylabel('Check-in queue');
+legend('50/50 split','All@12:00'); grid on; title('Check-in queue');
+
+subplot(3,1,2);
+plot(t, results.split.station_queue_ts_mean(1,:), 'LineWidth', 1.2); hold on;
+plot(t, results.split.station_queue_ts_mean(2,:), 'LineWidth', 1.2);
+plot(t, results.split.station_queue_ts_mean(3,:), 'LineWidth', 1.2);
+plot(t, results.split.station_queue_ts_mean(4,:), 'LineWidth', 1.2);
+xlabel('Time (s)'); ylabel('Queue length');
+legend('Pizza','Entree','Grill','Corner'); grid on; title('Station queues (50/50 split)');
+
+subplot(3,1,3);
+plot(t, results.all12.station_queue_ts_mean(1,:), 'LineWidth', 1.2); hold on;
+plot(t, results.all12.station_queue_ts_mean(2,:), 'LineWidth', 1.2);
+plot(t, results.all12.station_queue_ts_mean(3,:), 'LineWidth', 1.2);
+plot(t, results.all12.station_queue_ts_mean(4,:), 'LineWidth', 1.2);
+xlabel('Time (s)'); ylabel('Queue length');
+legend('Pizza','Entree','Grill','Corner'); grid on; title('Station queues (All@12:00)');
+
+%% ---------------- Helper functions ----------------
+
+function x = get_field_or_nan(st,field,idx)
+    if isfield(st,field)
+        x = st.(field)(idx);
     else
-        name = 'Entree'; % Default
+        x = NaN;
     end
 end
 
-function profile = create_student_profile(row)
-    profile = struct();
-    profile.first_station = clean_station_name(row{3});
-    
-    % Num Stations (Col 4)
-    try
-        profile.num_stations = max(1, min(4, str2double(row{4})));
-    catch
-        profile.num_stations = 1;
-    end
-    
-    % Weights (Col 5-8, Pizza, Entree, Grill, Corner)
-    weights = [str2double(row{5}), str2double(row{6}), str2double(row{7}), str2double(row{8})];
-    if any(isnan(weights))
-        weights = [1, 1, 1, 1];
-    end
-    
-    STATION_KEYS = {'Entree', 'Pizza', 'Grill', 'Corner'};
-    profile.weights = containers.Map(STATION_KEYS, num2cell(weights));
-end
-
-function profiles = load_profiles_matlab()
-    % Row format: {Col1, Col2, FirstStation, NumStations, W_Pizza, W_Entree, W_Grill, W_Corner}
-    dummy_data = { % Dummy data for now, the CSV reader was garbage.
-        {'', '', 'Entree bar', '2', '1', '5', '1', '1'};
-        {'', '', 'Pizza', '3', '3', '1', '1', '1'};
-        {'', '', 'Grill', '1', '1', '1', '5', '1'};
-        {'', '', 'Corner', '4', '1', '1', '1', '3'};
-        {'', '', 'Entree bar', '2', '1', '5', '1', '1'};
-        {'', '', 'Pizza', '3', '3', '1', '1', '1'};
-        {'', '', 'Grill', '1', '1', '5', '1', '1'};
-        {'', '', 'Corner', '4', '1', '1', '1', '3'};
-        {'', '', 'Entree bar', '2', '1', '5', '1', '1'};
-        {'', '', 'Pizza', '3', '3', '1', '1', '1'};
-    };
-
-    profiles = {};
-    for i = 1:length(dummy_data)
-        profiles{end+1} = create_student_profile(dummy_data{i});
+function arrivals = generate_arrivals(N, scenario, t1, t2, jitter)
+    switch scenario
+        case 'split'
+            n1 = floor(N/2);
+            n2 = N - n1;
+            a1 = t1 + rand(n1,1) * jitter;
+            a2 = t2 + rand(n2,1) * jitter;
+            arrivals = sort([a1; a2]);
+        case 'all12'
+            arrivals = sort(t2 + rand(N,1) * jitter);
+        otherwise
+            error('Unknown scenario');
     end
 end
 
-% SIMULATION CORE
+function paths = sample_paths(N, probs)
+    edges_cum = cumsum(probs(:)');
+    r = rand(N,1);
+    paths = cell(N,1);
+    for i = 1:N
+        if r(i) <= edges_cum(1)
+            paths{i} = 'PEGC';
+        elseif r(i) <= edges_cum(2)
+            paths{i} = 'PEG';
+        elseif r(i) <= edges_cum(3)
+            paths{i} = 'PEC';
+        else
+            paths{i} = 'PE';
+        end
+    end
+end
 
-function stats = run_simulation_matlab(scenario_type, profiles)
+function [start_times, end_times, wait_times] = run_checkin(arrivals, smin, smax, paths, tP, tE, tG, tC, station_next_free)
+    N = numel(arrivals);
+    start_times = zeros(N,1);
+    end_times   = zeros(N,1);
+    wait_times  = zeros(N,1);
+    next_free_checkin = 0;
     
-    % Randomness setup
-    RANDOM_SEED = 42;
-    rng(RANDOM_SEED);
-    
-    % Initialize Stats
-    stats = struct('wait_times', [], 'queue_over_time', []);
-
-    % Resource/Queue Management
-    entry_queue = []; % List of student IDs waiting for Entry
-    entry_busy_until = 0; % Time when the Entry Resource becomes free
-    student_arrival_events = {}; % Initial list of all student arrival times
-    
-    % Time tracking for queue monitoring
-    next_monitor_time = 0;
-
-    % 1. Generate all Student Arrival Events
-    NUM_STUDENTS = 100;
-    for i = 1:NUM_STUDENTS
-        profile = profiles{randi(length(profiles))}; % Select random profile
+    for i = 1:N
+        arr = arrivals(i);
+        sstart = max(arr, next_free_checkin);
+        service_time = smin + (smax - smin) * rand();
+        send = sstart + service_time;
         
-        % Determine Arrival Time based on Scenario
-        if strcmp(scenario_type, 'Two Sessions')
-            if rand() < 0.5
-                arrival_time = normrnd(900, 300); % 10:15 (900s) +/- 5m
+        path = paths{i};
+        if contains(path,'P')
+            next_station = 'P';
+        elseif contains(path,'E')
+            next_station = 'E';
+        elseif contains(path,'G')
+            next_station = 'G';
+        elseif contains(path,'C')
+            next_station = 'C';
+        else
+            next_station = ''; % safety
+        end
+        
+        if ~isempty(next_station)
+            send = max(send, station_next_free.(next_station));
+            station_next_free.(next_station) = send;
+        end
+        
+        start_times(i) = sstart;
+        end_times(i)   = send;
+        wait_times(i)  = sstart - arr;
+        next_free_checkin = send;
+    end
+end
+
+%% ---------------- Station simulation with paths + food choice ----------------
+function [student_timeline, station_records] = simulate_stations_with_paths_and_food(checkin_end_times, paths, ...
+        P_pizza, P_entree, P_grill, P_corner, tP, tE, tG, tC, tt_checkin_to_station, tt_station_to_station)
+
+    N = numel(checkin_end_times);
+    student_timeline = cell(N,1);
+
+    stations = {'P','E','G','C'};
+    service_time = struct('P',tP,'E',tE,'G',tG,'C',tC);
+    queue_capacity = struct('P',6,'E',6,'G',6,'C',8); % <-- new capacity limits
+    next_free = struct('P',0,'E',0,'G',0,'C',0);
+
+    % Initialize station records
+    for s = stations
+        station_records.(s{1}).arrivals = [];
+        station_records.(s{1}).start_times = [];
+    end
+
+    % Track current queue at each station
+    station_queue = struct('P',[],'E',[],'G',[],'C',[]);
+
+    % Generate food choices only for stations in path
+    food_choice = zeros(N,4);
+    for i = 1:N
+        p = paths{i};
+        if contains(p,'P'); food_choice(i,1) = rand() < P_pizza; end
+        if contains(p,'E'); food_choice(i,2) = rand() < P_entree; end
+        if contains(p,'G'); food_choice(i,3) = rand() < P_grill; end
+        if contains(p,'C'); food_choice(i,4) = rand() < P_corner; end
+    end
+
+    [~, order] = sort(checkin_end_times);
+
+    for k = 1:N
+        i = order(k);
+        path = paths{i};
+        st = struct();
+        cur_time = checkin_end_times(i);
+        last_station = '';
+
+        for j = 1:numel(path)
+            station = path(j);
+            idx = find(strcmp(stations, station));
+            wants_food = food_choice(i,idx);
+
+            % Travel time
+            if isempty(last_station)
+                travel = tt_checkin_to_station.(station);
             else
-                arrival_time = normrnd(7500, 300); % 12:05 (7500s) +/- 5m
+                travel = tt_station_to_station.(last_station).(station);
             end
-        else % 'One Session'
-            arrival_time = normrnd(7500, 300); % 12:05 only
+            t_arr = cur_time + travel;
+
+            % ---------------- Queue capacity handling ----------------
+            if wants_food
+                % Clean up the queue by removing people who already started service
+                station_queue.(station)(station_queue.(station) <= t_arr) = [];
+
+                % If queue is full, wait until a spot is free
+                if numel(station_queue.(station)) >= queue_capacity.(station)
+                    t_arr = max(t_arr, station_queue.(station)(1)); % wait for first person to leave
+                end
+            end
+
+            % Queue handling
+            s_start = max(t_arr, next_free.(station));
+
+            % Service duration
+            duration = service_time.(station) * wants_food;
+            s_end = s_start + duration;
+
+            % Update station records
+            if wants_food
+                station_queue.(station) = [station_queue.(station), s_end]; % student occupies queue until start
+            end
+            station_records.(station).arrivals(end+1,1) = t_arr;
+            station_records.(station).start_times(end+1,1) = s_start;
+
+            % Timeline entry
+            if wants_food
+                st.(station) = [s_start, s_end];
+            else
+                st.(station) = [NaN, NaN];
+            end
+
+            next_free.(station) = max(next_free.(station), s_end);
+            cur_time = s_end;
+            last_station = station;
         end
-        
-        % Store initial event: {Time, Type='Arrival', StudentID, Profile}
-        student_arrival_events(end+1,:) = {max(0, arrival_time), 'Arrival', i, profile};
+
+        student_timeline{i} = st;
     end
-    
-    % Sort events by time (essential for DES)
-    [~, sorted_idx] = sort([student_arrival_events{:,1}]);
-    event_list = student_arrival_events(sorted_idx, :);
-
-    current_time = 0;
-    event_idx = 1;
-    
-    SIMULATION_TIME = 10000;
-    % 2. Main Simulation Loop (Discrete-Event Scheduler)
-    while current_time < SIMULATION_TIME || ~isempty(entry_queue) || event_idx <= size(event_list, 1)
-        
-        % A. MONITOR QUEUE
-        if current_time >= next_monitor_time
-            stats.queue_over_time(end+1) = length(entry_queue);
-            MONITOR_INTERVAL = 10;
-            next_monitor_time = current_time + MONITOR_INTERVAL;
-        end
-
-        % B. HANDLE ARRIVALS and SERVICE COMPLETIONS
-        
-        next_event_time = SIMULATION_TIME + 1; % Initialize to far future
-        
-        % Find next Arrival time
-        if event_idx <= size(event_list, 1)
-            next_event_time = min(next_event_time, event_list{event_idx, 1});
-        end
-        
-        % Find next Service Completion time (Entry Resource)
-        if entry_busy_until < next_event_time
-            next_event_time = entry_busy_until;
-        end
-        
-        % If next event is beyond SIMULATION_TIME, break
-        if next_event_time > SIMULATION_TIME && isempty(entry_queue) && entry_busy_until >= SIMULATION_TIME
-            break;
-        end
-        
-        % Advance time to the next event
-        current_time = next_event_time;
-        
-        % --- C. PROCESS EVENTS AT current_time ---
-        
-        % C1. Process Arrivals
-        while event_idx <= size(event_list, 1) && event_list{event_idx, 1} <= current_time
-            arrival_time = event_list{event_idx, 1};
-            student_id = event_list{event_idx, 3};
-            profile = event_list{event_idx, 4};
-            
-            % Add to Entry Queue
-            entry_queue(end+1) = student_id;
-            
-            % If entry resource is free, start service now
-            if entry_busy_until <= current_time
-                entry_busy_until = current_time;
-            end
-            
-            event_idx = event_idx + 1;
-        end
-        
-        % C2. Process Service Completion at Entry
-        while entry_busy_until <= current_time && ~isempty(entry_queue)
-            
-            % Service Completion of the previous student
-            if entry_busy_until < current_time && entry_busy_until ~= 0
-                 % Move to food stations - not tracked in detail for queue stats
-            end
-            
-            % Start service for the next student in queue
-            served_student_id = entry_queue(1);
-            entry_queue(1) = []; % Dequeue
-            
-            % Calculate Wait Time
-            % Hmmm this is quite tricky without tracking individual arrival times in the queue.
-            % APPROXIMATION: Assume the wait time is the time spent waiting for the Entry to be free.
-            % A Python version would track individual wait times, but here we just track 
-            % the queue size change. To accurately track wait time,
-            % we would need to store {ID, ArrivalTime} in the queue. 
-            
-            % Service time at Entry
-            service_duration = TIME_ENTRY_MIN + (TIME_ENTRY_MAX - TIME_ENTRY_MIN) * rand();
-
-            % Update resource busy time
-            entry_busy_until = current_time + service_duration;
-        end
-        
-    end % End While Loop
 end
 
-% EXECUTION
-
-% Load dummy profiles for now
-profiles = load_profiles_matlab();
-
-disp('RUNNING SIMULATION (MATLAB DES)');
-
-% Scenario 1: Split
-stats_split = run_simulation_matlab('Two Sessions', profiles);
-
-% Scenario 2: Merged
-stats_merged = run_simulation_matlab('One Session', profiles);
-
-% RESULTS
-% Calculate Metrics
-max_q_split = max(stats_split.queue_over_time);
-avg_q_split = mean(stats_split.queue_over_time);
-
-max_q_merged = max(stats_merged.queue_over_time);
-avg_q_merged = mean(stats_merged.queue_over_time);
-
-fprintf('\nSCENARIO 1: Two Classes (10:10 & 12:00)');
-fprintf('Max Queue Length: %.0f', max_q_split);
-fprintf('Avg Queue Length (over time): %.2f', avg_q_split);
-
-fprintf('\nSCENARIO 2: One Class (12:00 only)');
-fprintf('Max Queue Length: %.0f', max_q_merged);
-fprintf('Avg Queue Length (over time): %.2f', avg_q_merged);
-
-fprintf('\nRESULT');
-if max_q_merged > max_q_split
-    increase = ((max_q_merged/max_q_split) - 1) * 100;
-    fprintf('Merging the classes causes the peak queue to grow by %.1f%%.', increase);
-else
-    disp('The split class scenario resulted in a higher or equal peak queue length.');
+%% ---------------- Queue timeseries ----------------
+function q = compute_queue_ts(arrivals, service_starts, times)
+    arrivals_sorted = sort(arrivals(:));
+    starts_sorted = sort(service_starts(:));
+    nTimes = numel(times);
+    q = zeros(1, nTimes);
+    ia = 1; isv = 1;
+    nA = numel(arrivals_sorted); nS = numel(starts_sorted);
+    for k = 1:nTimes
+        t = times(k);
+        while ia <= nA && arrivals_sorted(ia) <= t
+            ia = ia + 1;
+        end
+        a_count = ia - 1;
+        while isv <= nS && starts_sorted(isv) <= t
+            isv = isv + 1;
+        end
+        s_count = isv - 1;
+        q(k) = max(0, a_count - s_count);
+    end
 end
