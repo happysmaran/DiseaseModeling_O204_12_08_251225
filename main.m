@@ -5,7 +5,8 @@ N = 100;                % number of students
 simT = 10000;           % simulation horizon in seconds
 dt = 1;                 % sampling interval for queue time-series (s)
 trials = 1;             % Monte Carlo trials
-arrival_jitter = 600;   % jitter after class end (s)
+arrival_jitter_split = 600;   % 10 minutes
+arrival_jitter_all12 = 100;   % ~1 student / second for 100 students
 
 % Class end times (seconds since 10:00AM)
 t_10_20 = 20*60;        % 1200 s
@@ -14,6 +15,12 @@ t_12_00 = 120*60;       % 7200 s
 % Check-in service distribution (uniform)
 checkin_min = 2;
 checkin_max = 5;
+
+% Station capacities
+capacity.P = 6;
+capacity.E = 6;
+capacity.G = 6;
+capacity.C = 8;
 
 % Station deterministic service times (s)
 tP = 10; tE = 10; tG = 10; tC = 30;
@@ -75,7 +82,8 @@ for sIdx = 1:numel(scenarios)
         fprintf(' Trial %d/%d ...\n', tr, trials);
 
         % Generate arrivals and sample paths
-        arrivals = generate_arrivals(N, scenario, t_10_20, t_12_00, arrival_jitter);
+        arrivals = generate_arrivals(N, scenario, ...
+    t_10_20, t_12_00, arrival_jitter_split, arrival_jitter_all12);
         paths = sample_paths(N, path_probs);
 
         % Run check-in
@@ -84,20 +92,20 @@ for sIdx = 1:numel(scenarios)
         station_next_free.G = 0;
         station_next_free.C = 0;
 
-        [ci_start, ci_end, ci_wait] = run_checkin(arrivals, checkin_min, checkin_max, paths, ...
-                                         tP, tE, tG, tC, station_next_free);
+        [ci_start, ci_end, ci_wait] = run_checkin(arrivals, checkin_min, checkin_max);
 
         % -------------------- Station simulation with food choice --------------------
-        [student_timeline, station_records] = simulate_stations_with_paths_and_food( ...
-            ci_end, paths, P_pizza, P_entree, P_grill, P_corner, ...
-            tP, tE, tG, tC, tt_checkin_to_station, tt_station_to_station);
+        [student_timeline, station_records, station_queue_log] = ...
+    simulate_stations( ...
+        ci_end, paths, tP, tE, tG, tC, ...
+        tt_checkin_to_station, tt_station_to_station, capacity);
 
         % Compute queue time-series
         q_checkin = compute_queue_ts(arrivals, ci_start, times); % waiting outside check-in
-        qP = compute_queue_ts(station_records.P.arrivals, station_records.P.start_times, times);
-        qE = compute_queue_ts(station_records.E.arrivals, station_records.E.start_times, times);
-        qG = compute_queue_ts(station_records.G.arrivals, station_records.G.start_times, times);
-        qC = compute_queue_ts(station_records.C.arrivals, station_records.C.start_times, times);
+        qP = queue_ts_from_log(station_queue_log.P, times);
+        qE = queue_ts_from_log(station_queue_log.E, times);
+        qG = queue_ts_from_log(station_queue_log.G, times);
+        qC = queue_ts_from_log(station_queue_log.C, times);
 
         % Save CSV logs
         logfile = fullfile(logfolder, sprintf('checkin_log_%s_trial%02d.csv', scenario, tr));
@@ -186,16 +194,19 @@ function x = get_field_or_nan(st,field,idx)
     end
 end
 
-function arrivals = generate_arrivals(N, scenario, t1, t2, jitter)
+function arrivals = generate_arrivals(N, scenario, t1, t2, jitter_split, jitter_all12)
+
     switch scenario
         case 'split'
             n1 = floor(N/2);
             n2 = N - n1;
-            a1 = t1 + rand(n1,1) * jitter;
-            a2 = t2 + rand(n2,1) * jitter;
+            a1 = t1 + rand(n1,1) * jitter_split;
+            a2 = t2 + rand(n2,1) * jitter_split;
             arrivals = sort([a1; a2]);
+
         case 'all12'
-            arrivals = sort(t2 + rand(N,1) * jitter);
+            arrivals = sort(t2 + rand(N,1) * jitter_all12);
+
         otherwise
             error('Unknown scenario');
     end
@@ -218,132 +229,93 @@ function paths = sample_paths(N, probs)
     end
 end
 
-function [start_times, end_times, wait_times] = run_checkin(arrivals, smin, smax, paths, tP, tE, tG, tC, station_next_free)
+function [start_times, end_times, wait_times] = run_checkin(arrivals, smin, smax)
+
     N = numel(arrivals);
     start_times = zeros(N,1);
     end_times   = zeros(N,1);
     wait_times  = zeros(N,1);
-    next_free_checkin = 0;
-    
+
+    next_free = 0;
+
     for i = 1:N
-        arr = arrivals(i);
-        sstart = max(arr, next_free_checkin);
-        service_time = smin + (smax - smin) * rand();
-        send = sstart + service_time;
-        
-        path = paths{i};
-        if contains(path,'P')
-            next_station = 'P';
-        elseif contains(path,'E')
-            next_station = 'E';
-        elseif contains(path,'G')
-            next_station = 'G';
-        elseif contains(path,'C')
-            next_station = 'C';
-        else
-            next_station = ''; % safety
-        end
-        
-        if ~isempty(next_station)
-            send = max(send, station_next_free.(next_station));
-            station_next_free.(next_station) = send;
-        end
-        
+        sstart = max(arrivals(i), next_free);
+        service = smin + (smax - smin)*rand();
+        send = sstart + service;
+
         start_times(i) = sstart;
         end_times(i)   = send;
-        wait_times(i)  = sstart - arr;
-        next_free_checkin = send;
+        wait_times(i)  = sstart - arrivals(i);
+
+        next_free = send;
     end
 end
 
-%% ---------------- Station simulation with paths + food choice ----------------
-function [student_timeline, station_records] = simulate_stations_with_paths_and_food(checkin_end_times, paths, ...
-        P_pizza, P_entree, P_grill, P_corner, tP, tE, tG, tC, tt_checkin_to_station, tt_station_to_station)
-
-    N = numel(checkin_end_times);
-    student_timeline = cell(N,1);
+%% ---------------- Station simulation ----------------
+function [student_timeline, station_records, station_queue_log] = ...
+    simulate_stations(checkin_end, paths, tP, tE, tG, tC, ...
+                      tt_ci, tt_ss, capacity)
 
     stations = {'P','E','G','C'};
-    service_time = struct('P',tP,'E',tE,'G',tG,'C',tC);
-    queue_capacity = struct('P',6,'E',6,'G',6,'C',8); % <-- new capacity limits
+    service = struct('P',tP,'E',tE,'G',tG,'C',tC);
     next_free = struct('P',0,'E',0,'G',0,'C',0);
 
-    % Initialize station records
+    % queues store SERVICE START TIMES
+    queue = struct('P',[],'E',[],'G',[],'C',[]);
+
+    % logs
     for s = stations
         station_records.(s{1}).arrivals = [];
-        station_records.(s{1}).start_times = [];
+        station_records.(s{1}).starts   = [];
+        station_queue_log.(s{1}).time   = [];
+        station_queue_log.(s{1}).qlen   = [];
     end
 
-    % Track current queue at each station
-    station_queue = struct('P',[],'E',[],'G',[],'C',[]);
-
-    % Generate food choices only for stations in path
-    food_choice = zeros(N,4);
-    for i = 1:N
-        p = paths{i};
-        if contains(p,'P'); food_choice(i,1) = rand() < P_pizza; end
-        if contains(p,'E'); food_choice(i,2) = rand() < P_entree; end
-        if contains(p,'G'); food_choice(i,3) = rand() < P_grill; end
-        if contains(p,'C'); food_choice(i,4) = rand() < P_corner; end
-    end
-
-    [~, order] = sort(checkin_end_times);
+    N = numel(checkin_end);
+    student_timeline = cell(N,1);
+    [~, order] = sort(checkin_end);
 
     for k = 1:N
         i = order(k);
-        path = paths{i};
+        cur_t = checkin_end(i);
+        last = '';
         st = struct();
-        cur_time = checkin_end_times(i);
-        last_station = '';
 
-        for j = 1:numel(path)
-            station = path(j);
-            idx = find(strcmp(stations, station));
-            wants_food = food_choice(i,idx);
+        for j = 1:numel(paths{i})
+            s = paths{i}(j);
 
-            % Travel time
-            if isempty(last_station)
-                travel = tt_checkin_to_station.(station);
+            % travel
+            if isempty(last)
+                t_arr = cur_t + tt_ci.(s);
             else
-                travel = tt_station_to_station.(last_station).(station);
-            end
-            t_arr = cur_time + travel;
-
-            % ---------------- Queue capacity handling ----------------
-            if wants_food
-                % Clean up the queue by removing people who already started service
-                station_queue.(station)(station_queue.(station) <= t_arr) = [];
-
-                % If queue is full, wait until a spot is free
-                if numel(station_queue.(station)) >= queue_capacity.(station)
-                    t_arr = max(t_arr, station_queue.(station)(1)); % wait for first person to leave
-                end
+                t_arr = cur_t + tt_ss.(last).(s);
             end
 
-            % Queue handling
-            s_start = max(t_arr, next_free.(station));
+            % clean queue (remove started)
+            queue.(s)(queue.(s) <= t_arr) = [];
 
-            % Service duration
-            duration = service_time.(station) * wants_food;
-            s_end = s_start + duration;
-
-            % Update station records
-            if wants_food
-                station_queue.(station) = [station_queue.(station), s_end]; % student occupies queue until start
-            end
-            station_records.(station).arrivals(end+1,1) = t_arr;
-            station_records.(station).start_times(end+1,1) = s_start;
-
-            % Timeline entry
-            if wants_food
-                st.(station) = [s_start, s_end];
-            else
-                st.(station) = [NaN, NaN];
+            % capacity block
+            if numel(queue.(s)) >= capacity.(s)
+                t_arr = min(queue.(s));   % wait for first to start
+                queue.(s)(queue.(s) <= t_arr) = [];
             end
 
-            next_free.(station) = max(next_free.(station), s_end);
-            cur_time = s_end;
-            last_station = station;
+            s_start = max(t_arr, next_free.(s));
+            s_end   = s_start + service.(s);
+
+            % update
+            queue.(s) = [queue.(s), s_start];
+            next_free.(s) = s_end;
+
+            station_records.(s).arrivals(end+1) = t_arr;
+            station_records.(s).starts(end+1)   = s_start;
+
+            station_queue_log.(s).time(end+1) = t_arr;
+            station_queue_log.(s).qlen(end+1) = numel(queue.(s));
+
+            st.(s) = [s_start s_end];
+            cur_t = s_end;
+            last = s;
         end
 
         student_timeline{i} = st;
@@ -369,5 +341,18 @@ function q = compute_queue_ts(arrivals, service_starts, times)
         end
         s_count = isv - 1;
         q(k) = max(0, a_count - s_count);
+    end
+end
+
+function q = queue_ts_from_log(log, times)
+
+    q = zeros(size(times));
+    idx = 1;
+
+    for k = 1:numel(times)
+        while idx <= numel(log.time) && log.time(idx) <= times(k)
+            q(k) = log.qlen(idx);
+            idx = idx + 1;
+        end
     end
 end
