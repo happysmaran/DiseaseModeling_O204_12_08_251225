@@ -4,11 +4,10 @@ clearvars; close all; clc;
 N = 100;                % number of students
 simT = 10000;           % simulation horizon in seconds
 dt = 1;                 % sampling interval for queue time-series (s)
-trials = 1;             % Monte Carlo trials
 arrival_jitter_split = 600;   % 10 minutes
 arrival_jitter_all12 = 100;   % ~1 student / second for 100 students
 
-trials = 100;           % Number of trials (Monte Carlo basically)
+trials = 100;           % Number of trials
 
 % Class end times (seconds since 10:00AM)
 t_10_20 = 20*60;        % 1200 s
@@ -112,33 +111,33 @@ for sIdx = 1:numel(scenarios)
         qC = queue_ts_from_log(station_queue_log.C, times);
 
         % Save CSV logs
-        logfile = fullfile(logfolder, sprintf('checkin_log_%s_trial%02d.csv', scenario, tr));
-        T = table((1:N)', round(arrivals,3), round(ci_start,3), round(ci_end,3), round(ci_wait,3), paths(:), ...
-            'VariableNames',{'student_id','arrival_s','checkin_start_s','checkin_end_s','checkin_wait_s','path'});
-        writetable(T, logfile);
-        fprintf('  Saved check-in CSV: %s\n', logfile);
+        % logfile = fullfile(logfolder, sprintf('checkin_log_%s_trial%02d.csv', scenario, tr));
+        % T = table((1:N)', round(arrivals,3), round(ci_start,3), round(ci_end,3), round(ci_wait,3), paths(:), ...
+        %     'VariableNames',{'student_id','arrival_s','checkin_start_s','checkin_end_s','checkin_wait_s','path'});
+        % writetable(T, logfile);
+        % fprintf('  Saved check-in CSV: %s\n', logfile);
 
-        stationfile = fullfile(logfolder, sprintf('station_log_%s_trial%02d.csv', scenario, tr));
-        Srows = cell(N,10);
-        for i = 1:N
-            st = student_timeline{i};
-            row = cell(1,10);
-            row{1} = i;
-            row{2} = paths{i};
-            row{3} = NaN;
-            row{4} = get_field_or_nan(st,'P',1);
-            row{5} = get_field_or_nan(st,'P',2);
-            row{6} = get_field_or_nan(st,'E',1);
-            row{7} = get_field_or_nan(st,'E',2);
-            row{8} = get_field_or_nan(st,'G',1);
-            row{9} = get_field_or_nan(st,'G',2);
-            row{10} = get_field_or_nan(st,'C',1);
-            row{11} = get_field_or_nan(st,'C',2);
-            Srows(i,1:numel(row)) = row;
-        end
-        S = cell2table(Srows, 'VariableNames', {'student_id','path','checkin_end','P_start','P_end','E_start','E_end','G_start','G_end','C_start','C_end'});
-        writetable(S, stationfile);
-        fprintf('  Saved station CSV: %s\n', stationfile);
+        % stationfile = fullfile(logfolder, sprintf('station_log_%s_trial%02d.csv', scenario, tr));
+        % Srows = cell(N,10);
+        % for i = 1:N
+        %     st = student_timeline{i};
+        %     row = cell(1,10);
+        %     row{1} = i;
+        %     row{2} = paths{i};
+        %     row{3} = NaN;
+        %     row{4} = get_field_or_nan(st,'P',1);
+        %     row{5} = get_field_or_nan(st,'P',2);
+        %     row{6} = get_field_or_nan(st,'E',1);
+        %     row{7} = get_field_or_nan(st,'E',2);
+        %     row{8} = get_field_or_nan(st,'G',1);
+        %     row{9} = get_field_or_nan(st,'G',2);
+        %     row{10} = get_field_or_nan(st,'C',1);
+        %     row{11} = get_field_or_nan(st,'C',2);
+        %     Srows(i,1:numel(row)) = row;
+        % end
+        % S = cell2table(Srows, 'VariableNames', {'student_id','path','checkin_end','P_start','P_end','E_start','E_end','G_start','G_end','C_start','C_end'});
+        % writetable(S, stationfile);
+        % fprintf('  Saved station CSV: %s\n', stationfile);
 
         % Store timeseries
         queue_ts_trials(tr,:) = q_checkin;
@@ -159,7 +158,7 @@ for sIdx = 1:numel(scenarios)
     % Aggregate results
     results.(scenario).times = times;
     results.(scenario).queue_ts_mean = mean(queue_ts_trials, 1);
-    results.(scenario).station_queue_ts_mean = squeeze(mean(station_queue_ts_trials,1));
+    results.(scenario).station_queue_ts_mean = squeeze(mean(station_queue_ts_trials, 1));
     results.(scenario).trials_summary = trials_summary;
 end
 
