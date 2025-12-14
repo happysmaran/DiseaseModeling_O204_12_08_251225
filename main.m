@@ -8,6 +8,8 @@ trials = 1;             % Monte Carlo trials
 arrival_jitter_split = 600;   % 10 minutes
 arrival_jitter_all12 = 100;   % ~1 student / second for 100 students
 
+trials = 100;           % Number of trials (Monte Carlo basically)
+
 % Class end times (seconds since 10:00AM)
 t_10_20 = 20*60;        % 1200 s
 t_12_00 = 120*60;       % 7200 s
@@ -80,6 +82,8 @@ for sIdx = 1:numel(scenarios)
 
     for tr = 1:trials
         fprintf(' Trial %d/%d ...\n', tr, trials);
+        summary = struct();   % reset per trial
+
 
         % Generate arrivals and sample paths
         arrivals = generate_arrivals(N, scenario, ...
