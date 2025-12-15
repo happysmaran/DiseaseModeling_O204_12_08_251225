@@ -23,6 +23,11 @@ capacity.E = 6;
 capacity.G = 6;
 capacity.C = 8;
 
+buffer_capacity.P = 6;
+buffer_capacity.E = 6;
+buffer_capacity.G = 6;
+buffer_capacity.C = inf;
+
 % Station deterministic service times (s)
 tP = 10; tE = 10; tG = 10; tC = 30;
 
@@ -258,69 +263,106 @@ end
 function [student_timeline, station_records, station_queue_log] = ...
     simulate_stations(checkin_end, paths, tP, tE, tG, tC, ...
                       tt_ci, tt_ss, capacity)
-
     stations = {'P','E','G','C'};
-    service = struct('P',tP,'E',tE,'G',tG,'C',tC);
-    next_free = struct('P',0,'E',0,'G',0,'C',0);
-
-    % queues store SERVICE START TIMES
-    queue = struct('P',[],'E',[],'G',[],'C',[]);
-
-    % logs
+    dwell = struct('P',tP,'E',tE,'G',tG,'C',tC);
+    
+    % Track when each spot in the station becomes free
+    release_times = struct('P',[],'E',[],'G',[],'C',[]);
+    
+    % Initialize logs
     for s = stations
         station_records.(s{1}).arrivals = [];
         station_records.(s{1}).starts   = [];
         station_queue_log.(s{1}).time   = [];
         station_queue_log.(s{1}).qlen   = [];
     end
-
+    
     N = numel(checkin_end);
     student_timeline = cell(N,1);
     [~, order] = sort(checkin_end);
-
+    
+    % ---------------- Simulation ----------------
     for k = 1:N
         i = order(k);
         cur_t = checkin_end(i);
         last = '';
         st = struct();
-
+        
         for j = 1:numel(paths{i})
             s = paths{i}(j);
-
-            % travel
+            
+            % ---- 1. Travel to Station ----
             if isempty(last)
                 t_arr = cur_t + tt_ci.(s);
             else
                 t_arr = cur_t + tt_ss.(last).(s);
             end
-
-            % clean queue (remove started)
-            queue.(s)(queue.(s) <= t_arr) = [];
-
-            % capacity block
-            if numel(queue.(s)) >= capacity.(s)
-                t_arr = min(queue.(s));   % wait for first to start
-                queue.(s)(queue.(s) <= t_arr) = [];
+            
+            % ---- 2. Wait for physical space ----
+            % Remove people who left BEFORE I arrived
+            release_times.(s)(release_times.(s) <= t_arr) = [];
+            
+            % If still full, wait for the next person to leave
+            while numel(release_times.(s)) >= capacity.(s)
+                t_arr = min(release_times.(s)); % Jump time to when a spot opens
+                release_times.(s)(release_times.(s) <= t_arr) = []; % Clear that spot
             end
-
-            s_start = max(t_arr, next_free.(s));
-            s_end   = s_start + service.(s);
-
-            % update
-            queue.(s) = [queue.(s), s_start];
-            next_free.(s) = s_end;
-
+            
+            % ---- 3. Enter station ----
+            s_start = t_arr;
+            s_end_tentative = s_start + dwell.(s);
+            
+            % ---- 4. Blocking / Next Station Check ----
+            % Before we can finish here, check if we are blocked by the next station
+            if j < numel(paths{i})
+                next = paths{i}(j+1);
+                t_reach_next = s_end_tentative + tt_ss.(s).(next);
+                
+                % Check how many people are in 'next' at the time we would arrive
+                % (Count timestamps in 'next' that are still in the future relative to t_reach_next)
+                active_in_next = sum(release_times.(next) > t_reach_next);
+                
+                while active_in_next >= capacity.(next)
+                    % Next station is full. We are blocked.
+                    % Find the earliest time a spot opens in 'next' AFTER our arrival
+                    future_releases = sort(release_times.(next));
+                    blockers = future_releases(future_releases > t_reach_next);
+                    
+                    if isempty(blockers)
+                        break; % Should not happen given while condition, failsafe
+                    end
+                    
+                    t_unblocked = min(blockers);
+                    
+                    % We extend our stay in CURRENT station 's'
+                    extra_wait = t_unblocked - t_reach_next;
+                    s_end_tentative = s_end_tentative + extra_wait;
+                    
+                    % Update time check for next iteration of while loop
+                    t_reach_next = t_unblocked;
+                    active_in_next = sum(release_times.(next) > t_reach_next);
+                end
+            end
+            
+            % ---- 5. Finalize and Log ----
+            s_end = s_end_tentative;
+            
+            % Add my exit time to this station's release registry
+            release_times.(s) = [release_times.(s), s_end];
+            
+            % Update logs
             station_records.(s).arrivals(end+1) = t_arr;
             station_records.(s).starts(end+1)   = s_start;
-
-            station_queue_log.(s).time(end+1) = t_arr;
-            station_queue_log.(s).qlen(end+1) = numel(queue.(s));
-
+            
+            % Log queue: count people currently in release_times (including me)
+            current_q_len = numel(release_times.(s));
+            station_queue_log.(s).time(end+1)   = t_arr;
+            station_queue_log.(s).qlen(end+1)   = current_q_len;
+            
             st.(s) = [s_start s_end];
             cur_t = s_end;
             last = s;
         end
-
         student_timeline{i} = st;
     end
 end
