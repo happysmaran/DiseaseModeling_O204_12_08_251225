@@ -17,6 +17,23 @@ t_12_00 = 120*60;       % 7200 s
 checkin_min = 2;
 checkin_max = 5;
 
+% Check that number of students is positive
+assert(N > 0, 'Number of students N must be greater than zero.');
+% Check that simulation time is positive
+assert(simT > 0, 'Simulation time (simT) must be greater than zero.');
+% Check for valid sampling interval
+assert(dt > 0, 'Sampling interval (dt) must be positive.');
+% Check arrival jitter for valid positive values
+assert(arrival_jitter_split > 0, 'Arrival jitter split must be positive.');
+assert(arrival_jitter_all12 > 0, 'Arrival jitter for all12 scenario must be positive.');
+% Check number of trials
+assert(trials > 0, 'Number of trials must be positive.');
+% Validate station capacities
+assert(all(structfun(@(x) x > 0, capacity)), 'Station capacities must be positive values.');
+% Validate check-in service times
+assert(checkin_min > 0 && checkin_max > 0 && checkin_min < checkin_max, ...
+    'Check-in service times must be positive, and min time should be less than max time.');
+
 % Station capacities
 capacity.P = 6;
 capacity.E = 6;
